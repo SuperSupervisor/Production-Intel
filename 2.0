@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Production Intel Dashboard</title>
+    <!-- Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+        }
+        .font-mono { font-family: 'JetBrains+Mono', monospace; }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            background: #1e293b;
+            height: 0.375rem;
+            border-radius: 0.5rem;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 1rem;
+            width: 1rem;
+            background: #3b82f6;
+            border-radius: 50%;
+            margin-top: -0.3125rem;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8">
+    <div id="app" class="max-w-7xl mx-auto">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div>
+                <h1 class="text-3xl font-black flex items-center gap-2 tracking-tight">
+                    <i data-lucide="monitor" class="text-blue-500"></i> PRODUCTION INTEL
+                </h1>
+                <div class="flex items-center gap-3 mt-1">
+                    <p id="clock" class="text-slate-400 text-[10px] font-mono uppercase tracking-widest">--:--:--</p>
+                    <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full border border-slate-800 bg-slate-900 text-[10px] font-bold text-slate-400 uppercase">
+                        Standalone Client
+                    </div>
+                </div>
+            </div>
+            <button onclick="resetToDefaults()" class="flex items-center gap-2 bg-slate-900 border border-slate-800 px-4 py-2 rounded-lg hover:bg-slate-800 transition-colors text-red-400 text-xs font-bold">
+                <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> RESET DATA
+            </button>
+        </header>
+
+        <div id="machine-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Machine components are dynamically injected here -->
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const allLengths = ["15\"", "18\"", "21\"", "23\"", "24\"", "30\"", "33\""];
+        const initialMachineData = [
+            { id: 1, name: "Red Machine", color: "#ef4444", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "23\"", allowedLengths: ["23\""], queue: [], status: 'idle' },
+            { id: 2, name: "Orange Machine", color: "#f97316", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "33\"", allowedLengths: ["33\"", "21\"", "18\""], queue: [], status: 'idle' },
+            { id: 3, name: "Yellow Machine", color: "#eab308", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "23\"", allowedLengths: ["15\"", "18\"", "21\"", "23\""], queue: [], status: 'idle' },
+            { id: 4, name: "Green Machine", color: "#22c55e", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "15\"", allowedLengths: allLengths, queue: [], status: 'idle' },
+            { id: 5, name: "Blue Machine", color: "#3b82f6", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "15\"", allowedLengths: allLengths, queue: [], status: 'idle' },
+        ];
+
+        // State initialization (Using LocalStorage for persistence on a single device)
+        let machines = JSON.parse(localStorage.getItem('production_intel_data')) || JSON.parse(JSON.stringify(initialMachineData));
+
+        function saveLocal() {
+            localStorage.setItem('production_intel_data', JSON.stringify(machines));
+        }
+
+        function updateClock() {
+            document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+            render(); 
+        }
+        setInterval(updateClock, 10000);
+        updateClock();
+
+        // Business Logic
+        function isTimeInActiveShift(date, activeShifts) {
+            const day = date.getDay(); 
+            const hour = date.getHours();
+            const min = date.getMinutes();
+            const timeVal = hour + min / 60;
+            const firstStart = 6.5; 
+            const firstEnd = 16.5; 
+            const secondEnd = 20.5;   
+            if (day === 0 || day === 6) return false;
+            let inFirst = activeShifts.includes('1st') && (timeVal >= firstStart && timeVal < firstEnd);
+            let inSecond = activeShifts.includes('2nd') && (timeVal >= firstEnd && timeVal < secondEnd);
+            let inThird = activeShifts.includes('3rd') && (timeVal >= secondEnd || timeVal < firstStart);
+            return inFirst || inSecond || inThird;
+        }
+
+        function calculateMetrics(m) {
+            const bph = (m.speed * 60 / 1000) * (m.efficiency / 100);
+            const currentRunMins = (bph > 0 && m.target > 0) ? (m.target / bph) * 60 : 0;
+            const sequence = [{ type: 'job', mins: currentRunMins, bph: bph }];
+            
+            m.queue.forEach(q => {
+                sequence.push({ type: 'co', mins: q.changeOver || 0 });
+                const qBph = (q.speed * 60 / 1000) * (m.efficiency / 100);
+                const qMins = (qBph > 0 && q.target > 0) ? (q.target / qBph) * 60 : 0;
+                sequence.push({ type: 'job', mins: qMins, bph: qBph });
+            });
+
+            const totalMinsRemaining = sequence.reduce((acc, curr) => acc + curr.mins, 0);
+            let checkDate = new Date();
+            let remainingMins = totalMinsRemaining;
+            let safetyCounter = 0;
+            while (remainingMins > 0 && safetyCounter < 43200) {
+                if (isTimeInActiveShift(checkDate, m.shifts)) remainingMins--;
+                checkDate.setMinutes(checkDate.getMinutes() + 1);
+                safetyCounter++;
+            }
+
+            const tomorrowMorning = new Date();
+            tomorrowMorning.setDate(tomorrowMorning.getDate() + 1);
+            tomorrowMorning.setHours(6, 30, 0, 0);
+
+            let projectionBoxes = 0;
+            let simDate = new Date();
+            let simSequence = JSON.parse(JSON.stringify(sequence));
+            while (simDate < tomorrowMorning && simSequence.length > 0) {
+                if (isTimeInActiveShift(simDate, m.shifts)) {
+                    let currentStep = simSequence[0];
+                    if (currentStep.type === 'job') projectionBoxes += (currentStep.bph / 60);
+                    currentStep.mins -= 1;
+                    if (currentStep.mins <= 0) simSequence.shift();
+                }
+                simDate.setMinutes(simDate.getMinutes() + 1);
+            }
+
+            const h = Math.floor(totalMinsRemaining / 60);
+            const mins = Math.round(totalMinsRemaining % 60);
+            const isToday = checkDate.toDateString() === new Date().toDateString();
+            const timeStr = checkDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            let finishStr = totalMinsRemaining > 0 ? `${checkDate.toLocaleDateString([], { weekday: 'short' })} ${timeStr}` : "N/A";
+            if (isToday && totalMinsRemaining > 0) finishStr = `Today ${timeStr}`;
+
+            return { duration: `${h}h ${mins}m`, finish: finishStr, bph, projection: Math.floor(projectionBoxes) };
+        }
+
+        // Event Handlers
+        window.updateField = (id, field, value) => {
+            const m = machines.find(x => x.id === id);
+            m[field] = (field === 'speed' || field === 'target' || field === 'efficiency') ? parseFloat(value) || 0 : value;
+            saveLocal();
+            render();
+        };
+
+        window.toggleShift = (id, shift) => {
+            const m = machines.find(x => x.id === id);
+            if (m.shifts.includes(shift)) {
+                m.shifts = m.shifts.filter(s => s !== shift);
+            } else {
+                m.shifts.push(shift);
+            }
+            saveLocal();
+            render();
+        };
+
+        window.addQueue = (id) => {
+            const m = machines.find(x => x.id === id);
+            m.queue.push({ id: Date.now(), changeOver: 0, speed: 0, target: 0, length: m.currentLength });
+            saveLocal();
+            render();
+        };
+
+        window.updateQueue = (mId, qId, field, value) => {
+            const m = machines.find(x => x.id === mId);
+            const q = m.queue.find(x => x.id === qId);
+            q[field] = (field === 'length') ? value : (parseFloat(value) || 0);
+            saveLocal();
+            render();
+        };
+
+        window.removeQueue = (mId, qId) => {
+            const m = machines.find(x => x.id === mId);
+            m.queue = m.queue.filter(x => x.id !== qId);
+            saveLocal();
+            render();
+        };
+
+        window.promoteQueue = (mId) => {
+            const m = machines.find(x => x.id === mId);
+            if (m.queue.length > 0) {
+                const next = m.queue[0];
+                m.speed = next.speed;
+                m.target = next.target;
+                m.currentLength = next.length;
+                m.queue.shift();
+                saveLocal();
+                render();
+            }
+        };
+
+        window.resetToDefaults = () => {
+            if(confirm("Are you sure? This will wipe all current machine data on this device.")) {
+                machines = JSON.parse(JSON.stringify(initialMachineData));
+                saveLocal();
+                render();
+            }
+        };
+
+        // UI Core
+        function render() {
+            const grid = document.getElementById('machine-grid');
+            grid.innerHTML = machines.map(m => {
+                const metrics = calculateMetrics(m);
+                const isActive = m.speed > 0 || m.queue.length > 0;
+                const statusColor = m.status === 'active' ? 'bg-emerald-500' : m.status === 'maintenance' ? 'bg-amber-400' : 'bg-red-500';
+
+                return `
+                <div class="bg-slate-900 border-2 border-slate-800 rounded-2xl overflow-hidden flex flex-col shadow-2xl transition-all" style="border-color: ${isActive ? m.color : '#1e293b'}">
+                    <div class="bg-white/5 p-4 border-b border-slate-800">
+                        <div class="flex items-start justify-between">
+                            <div class="flex flex-col gap-1">
+                                <div class="flex items-center gap-2">
+                                    <div class="w-3 h-3 rounded-full" style="background-color: ${m.color}"></div>
+                                    <span class="font-black uppercase tracking-tighter text-lg leading-none">${m.name}</span>
+                                </div>
+                                <div class="flex items-center gap-1.5 bg-black/40 px-2 py-1 rounded-md border border-white/5 mt-1">
+                                    <div class="w-2 h-2 rounded-full ${statusColor} ${m.status === 'active' ? 'animate-pulse shadow-[0_0_8px_#10b981]' : ''}"></div>
+                                    <select onchange="updateField(${m.id}, 'status', this.value)" class="bg-transparent text-[10px] font-black text-slate-300 uppercase outline-none cursor-pointer">
+                                        <option value="active" class="bg-slate-900" ${m.status === 'active' ? 'selected' : ''}>Active</option>
+                                        <option value="maintenance" class="bg-slate-900" ${m.status === 'maintenance' ? 'selected' : ''}>Maintenance</option>
+                                        <option value="idle" class="bg-slate-900" ${m.status === 'idle' ? 'selected' : ''}>Idle</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="flex flex-col items-end">
+                                <span class="text-[8px] text-slate-500 font-bold uppercase tracking-widest">Length</span>
+                                <select onchange="updateField(${m.id}, 'currentLength', this.value)" class="bg-transparent text-sm font-black text-blue-400 outline-none">
+                                    ${m.allowedLengths.map(len => `<option value='${len}' class="bg-slate-900 text-white" ${m.currentLength === len ? 'selected' : ''}>${len}</option>`).join('')}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-5 space-y-4">
+                        <div class="bg-blue-500/10 border border-blue-500/20 p-3 rounded-xl flex items-center justify-between">
+                            <div class="flex flex-col">
+                                <span class="text-[9px] font-black text-blue-400 uppercase tracking-wider">Output by 06:30 AM</span>
+                                <div class="flex items-baseline gap-1 mt-0.5">
+                                    <span class="text-xl font-black text-white">${metrics.projection.toLocaleString()}</span>
+                                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-tighter">Boxes</span>
+                                </div>
+                            </div>
+                            <i data-lucide="trending-up" class="text-blue-400 opacity-40"></i>
+                        </div>
+
+                        <div class="flex gap-2">
+                            ${['1st', '2nd', '3rd'].map(s => `
+                                <button onclick="toggleShift(${m.id}, '${s}')" class="flex-1 py-1.5 rounded border text-[10px] font-black transition-all ${m.shifts.includes(s) ? 'bg-slate-700 border-slate-500 text-white' : 'bg-slate-950 border-slate-800 text-slate-600'}">${s}</button>
+                            `).join('')}
+                        </div>
+
+                        <div class="space-y-2">
+                            <div class="flex items-center gap-2 text-[10px] font-black text-emerald-500 uppercase tracking-widest">
+                                <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 ${m.status === 'active' ? 'animate-pulse' : 'opacity-40'}"></div>
+                                Current Job
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div class="bg-slate-950 p-2 rounded-lg border border-slate-800">
+                                    <label class="text-[8px] font-black text-slate-600 uppercase block mb-1">Speed FPM</label>
+                                    <input type="number" value="${m.speed || ''}" onchange="updateField(${m.id}, 'speed', this.value)" class="w-full bg-transparent text-white font-mono text-sm outline-none" placeholder="0">
+                                </div>
+                                <div class="bg-slate-950 p-2 rounded-lg border border-slate-800">
+                                    <label class="text-[8px] font-black text-slate-600 uppercase block mb-1">Boxes Target</label>
+                                    <input type="number" value="${m.target || ''}" onchange="updateField(${m.id}, 'target', this.value)" class="w-full bg-transparent text-white font-mono text-sm outline-none" placeholder="0">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="space-y-3">
+                            <div class="flex items-center justify-between">
+                                <span class="text-[10px] font-black text-amber-500 uppercase tracking-widest">Queue</span>
+                                <button onclick="addQueue(${m.id})" class="flex items-center gap-1 text-[10px] font-black text-blue-400"><i data-lucide="plus" class="w-3 h-3"></i> ADD NEXT JOB</button>
+                            </div>
+                            <div class="space-y-3 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                                ${m.queue.map((q, idx) => `
+                                    <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-3 relative group">
+                                        <button onclick="removeQueue(${m.id}, ${q.id})" class="absolute -top-2 -right-2 bg-red-500 text-white p-1 rounded-full opacity-0 group-hover:opacity-100"><i data-lucide="trash-2" class="w-2.5 h-2.5"></i></button>
+                                        <div class="flex justify-between items-center border-b border-slate-900 pb-2">
+                                            <span class="text-[9px] font-bold text-slate-500 uppercase">#${idx + 1} Sequence</span>
+                                            <select onchange="updateQueue(${m.id}, ${q.id}, 'length', this.value)" class="bg-transparent text-[10px] font-bold text-amber-500 outline-none">
+                                                ${m.allowedLengths.map(len => `<option value='${len}' class="bg-slate-900 text-white" ${q.length === len ? 'selected' : ''}>${len}</option>`).join('')}
+                                            </select>
+                                        </div>
+                                        <div class="grid grid-cols-3 gap-2">
+                                            <div class="space-y-1"><span class="text-[8px] text-slate-600 font-bold uppercase block">CO Mins</span><input type="number" value="${q.changeOver || ''}" onchange="updateQueue(${m.id}, ${q.id}, 'changeOver', this.value)" class="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs font-mono text-white outline-none"></div>
+                                            <div class="space-y-1"><span class="text-[8px] text-slate-600 font-bold uppercase block">Speed</span><input type="number" value="${q.speed || ''}" onchange="updateQueue(${m.id}, ${q.id}, 'speed', this.value)" class="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs font-mono text-white outline-none"></div>
+                                            <div class="space-y-1"><span class="text-[8px] text-slate-600 font-bold uppercase block">Target</span><input type="number" value="${q.target || ''}" onchange="updateQueue(${m.id}, ${q.id}, 'target', this.value)" class="w-full bg-slate-900 border border-slate-800 rounded p-1 text-xs font-mono text-white outline-none"></div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                                ${m.queue.length > 0 ? `
+                                    <button onclick="promoteQueue(${m.id})" class="w-full flex items-center justify-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 border border-emerald-500/30 py-2 rounded-lg text-[10px] font-black uppercase"><i data-lucide="arrow-up-circle" class="w-3.5 h-3.5"></i> Promote Next Job</button>
+                                ` : ''}
+                            </div>
+                        </div>
+
+                        <div class="space-y-1">
+                            <div class="flex justify-between text-[10px] font-black text-slate-500 uppercase"><span>Efficiency</span><span class="text-blue-400">${m.efficiency}%</span></div>
+                            <input type="range" min="1" max="100" value="${m.efficiency}" oninput="updateField(${m.id}, 'efficiency', this.value)" class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none accent-blue-500 cursor-pointer">
+                        </div>
+
+                        <div class="bg-black/40 p-4 rounded-xl border border-slate-800 shadow-inner mt-auto">
+                            <div class="flex flex-col mb-3">
+                                <span class="text-[9px] font-black text-slate-500 uppercase mb-1 tracking-widest">Finish Time</span>
+                                <div class="flex items-center gap-2">
+                                    <i data-lucide="clock" class="w-4 h-4 text-emerald-500"></i>
+                                    <span class="text-base font-black text-white">${metrics.finish}</span>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-2 gap-4 border-t border-slate-800/50 pt-3">
+                                <div><p class="text-[8px] font-black text-slate-600 uppercase">Clock Time</p><p class="font-mono text-xs text-slate-400">${metrics.duration}</p></div>
+                                <div class="text-right"><p class="text-[8px] font-black text-slate-600 uppercase">Current BPH</p><p class="font-mono text-xs text-slate-400">${Math.round(metrics.bph).toLocaleString()}</p></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                `;
+            }).join('');
+            lucide.createIcons();
+        }
+
+        render();
+    </script>
+</body>
+</html>
