@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Production Intel Dashboard</title>
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
 
@@ -66,7 +67,7 @@
       { id: 5, name: "Blue Machine", color: "#3b82f6", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "15\"", allowedLengths: allLengths, queue: [], status: 'idle', ...defaultMachineSchedule },
     ];
 
-    // migrate older saved machines missing new keys (and keep all old fields)
+    // Migrate older saved machines missing new keys (and keep all old fields)
     machines = machines.map(m => ({ ...defaultMachineSchedule, ...m, queue: Array.isArray(m.queue) ? m.queue : [] }));
 
     function saveData() { localStorage.setItem('prod_intel_v4', JSON.stringify(machines)); }
@@ -119,11 +120,20 @@
       return in1st || in2nd || in3rd;
     }
 
+    function formatCountdown(msLeft) {
+      const totalSec = Math.max(0, Math.floor(msLeft / 1000));
+      const hh = Math.floor(totalSec / 3600);
+      const mm = Math.floor((totalSec % 3600) / 60);
+      const ss = totalSec % 60;
+      return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+    }
+
     // ---- Metrics ----
     function calculateMetrics(m) {
       const bph = (m.speed * 60 / 1000) * (m.efficiency / 100);
       const currentJobMins = (bph > 0 && m.target > 0) ? (m.target / bph) * 60 : 0;
 
+      // Build sequence: current job, then (CO, job) for each queued job
       let sequence = [{ mins: currentJobMins, bph: bph, type: 'job' }];
       m.queue.forEach(q => {
         const qBph = (q.speed * 60 / 1000) * (m.efficiency / 100);
@@ -131,14 +141,14 @@
         sequence.push({ mins: (qBph > 0 && q.target > 0) ? (q.target / qBph) * 60 : 0, bph: qBph, type: 'job' });
       });
 
-      let totalMins = sequence.reduce((acc, s) => acc + s.mins, 0);
+      const totalMins = sequence.reduce((acc, s) => acc + s.mins, 0);
 
-      // Finish time (count only active minutes)
-      let checkDate = new Date();
+      // Estimated finish: count only minutes that fall inside active shifts
+      let finishDate = new Date();
       let remaining = totalMins;
       while (remaining > 0) {
-        if (isTimeInActiveShift(checkDate, m)) remaining--;
-        checkDate.setMinutes(checkDate.getMinutes() + 1);
+        if (isTimeInActiveShift(finishDate, m)) remaining--;
+        finishDate.setMinutes(finishDate.getMinutes() + 1);
       }
 
       // Projection cutoff: tomorrow 06:30
@@ -151,7 +161,7 @@
       let simSequence = JSON.parse(JSON.stringify(sequence));
       while (simDate < tomorrow630 && simSequence.length > 0) {
         if (isTimeInActiveShift(simDate, m)) {
-          let step = simSequence[0];
+          const step = simSequence[0];
           if (step.type === 'job') projection += (step.bph / 60);
           step.mins -= 1;
           if (step.mins <= 0) simSequence.shift();
@@ -159,38 +169,41 @@
         simDate.setMinutes(simDate.getMinutes() + 1);
       }
 
-      // Next job ETA (current job + first queued CO), stored as a timestamp for cheap 1s countdown updates
-      let nextEtaMs = null;
-      let nextAtStr = null;
-      if (m.queue.length > 0 && currentJobMins > 0) {
-        const minsToNextJobStart = currentJobMins + (m.queue[0].changeOver || 0);
+      // Separate timers:
+      // - jobEndEtaMs: when the CURRENT job ends
+      // - coEndEtaMs: when the FIRST queued changeover ends (after the job ends)
+      let jobEndEtaMs = null;
+      let coEndEtaMs = null;
 
-        let nextDate = new Date();
-        let rem2 = minsToNextJobStart;
-        while (rem2 > 0) {
-          if (isTimeInActiveShift(nextDate, m)) rem2--;
-          nextDate.setMinutes(nextDate.getMinutes() + 1);
+      if (currentJobMins > 0) {
+        // Job end
+        let jobEndDate = new Date();
+        let remJob = currentJobMins;
+        while (remJob > 0) {
+          if (isTimeInActiveShift(jobEndDate, m)) remJob--;
+          jobEndDate.setMinutes(jobEndDate.getMinutes() + 1);
         }
+        jobEndEtaMs = jobEndDate.getTime();
 
-        nextEtaMs = nextDate.getTime();
-        nextAtStr = nextDate.toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' });
+        // Changeover end (only if a queue exists and CO > 0)
+        if (m.queue.length > 0 && (m.queue[0].changeOver || 0) > 0) {
+          let coEndDate = new Date(jobEndDate.getTime());
+          let remCO = (m.queue[0].changeOver || 0);
+          while (remCO > 0) {
+            if (isTimeInActiveShift(coEndDate, m)) remCO--;
+            coEndDate.setMinutes(coEndDate.getMinutes() + 1);
+          }
+          coEndEtaMs = coEndDate.getTime();
+        }
       }
 
       return {
-        finish: totalMins > 0 ? checkDate.toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' }) : "N/A",
+        finish: totalMins > 0 ? finishDate.toLocaleString([], { weekday:'short', hour:'numeric', minute:'2-digit' }) : "N/A",
         projection: Math.floor(projection),
         duration: `${Math.floor(totalMins/60)}h ${Math.round(totalMins%60)}m`,
-        nextEtaMs,
-        nextAtStr
+        jobEndEtaMs,
+        coEndEtaMs
       };
-    }
-
-    function formatCountdown(msLeft) {
-      const totalSec = Math.max(0, Math.floor(msLeft / 1000));
-      const hh = Math.floor(totalSec / 3600);
-      const mm = Math.floor((totalSec % 3600) / 60);
-      const ss = totalSec % 60;
-      return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
     }
 
     // ---- Updates ----
@@ -198,7 +211,6 @@
       const m = machines.find(x => x.id === id);
       if (!m) return;
 
-      // numeric fields
       if (['speed','target','efficiency'].includes(field)) {
         m[field] = parseFloat(val) || 0;
       } else {
@@ -263,16 +275,8 @@
       grid.innerHTML = machines.map(m => {
         const metrics = calculateMetrics(m);
 
-        // live countdown will read data-eta on this element
-        const nextCountdownDisplay =
-          metrics.nextEtaMs
-            ? formatCountdown(metrics.nextEtaMs - Date.now())
-            : '—';
-
-        const nextAtDisplay =
-          metrics.nextAtStr
-            ? metrics.nextAtStr
-            : (m.queue.length > 0 ? 'set speed/target' : 'no queue');
+        const jobEndsDisplay = metrics.jobEndEtaMs ? formatCountdown(metrics.jobEndEtaMs - Date.now()) : '—';
+        const coEndsDisplay  = metrics.coEndEtaMs  ? formatCountdown(metrics.coEndEtaMs  - Date.now()) : '—';
 
         return `
         <div class="bg-slate-900 border-2 rounded-2xl shadow-2xl overflow-hidden" style="border-color: ${isProducing(m) ? m.color : '#1e293b'}">
@@ -304,24 +308,12 @@
               <p class="text-3xl font-black">${metrics.projection.toLocaleString()} <span class="text-xs text-slate-500 uppercase">Boxes</span></p>
             </div>
 
-            <div class="bg-slate-950 border border-slate-800 p-3 rounded-xl">
-              <p class="text-[9px] font-black text-slate-400 uppercase tracking-widest">Next Job Countdown</p>
-              <div class="flex items-baseline justify-between gap-3">
-                <p id="nextcount-${m.id}" data-eta="${metrics.nextEtaMs || ''}" class="text-2xl font-black ${metrics.nextEtaMs ? 'text-emerald-400' : 'text-slate-600'}">
-                  ${nextCountdownDisplay}
-                </p>
-                <p id="nextat-${m.id}" class="text-[10px] font-mono text-slate-500 uppercase">
-                  ${nextAtDisplay}
-                </p>
-              </div>
-              <p class="text-[9px] text-slate-500 mt-1">
-                (counts: current job + next CO explains changeover impact)
-              </p>
-            </div>
-
             <div class="flex gap-1">
               ${['1st', '2nd', '3rd'].map(s => `
-                <button onclick="toggleShift(${m.id}, '${s}')" class="flex-1 py-1.5 rounded text-[10px] font-black ${m.shifts.includes(s) ? 'bg-slate-700 text-white' : 'bg-slate-950 text-slate-600'}">${s}</button>
+                <button onclick="toggleShift(${m.id}, '${s}')"
+                  class="flex-1 py-1.5 rounded text-[10px] font-black ${m.shifts.includes(s) ? 'bg-slate-700 text-white' : 'bg-slate-950 text-slate-600'}">
+                  ${s}
+                </button>
               `).join('')}
             </div>
 
@@ -352,12 +344,36 @@
               <div class="grid grid-cols-2 gap-3">
                 <div class="bg-slate-950 p-2 rounded border border-slate-800">
                   <label class="text-[8px] font-black text-slate-500 uppercase">Speed FPM</label>
-                  <input type="number" value="${m.speed || ''}" onchange="updateField(${m.id}, 'speed', this.value)" class="w-full bg-transparent text-white font-mono text-sm outline-none">
+                  <input type="number" value="${m.speed || ''}"
+                    onchange="updateField(${m.id}, 'speed', this.value)"
+                    onfocus="this.select()" onclick="this.select()"
+                    class="w-full bg-transparent text-white font-mono text-sm outline-none">
                 </div>
                 <div class="bg-slate-950 p-2 rounded border border-slate-800">
                   <label class="text-[8px] font-black text-slate-500 uppercase">Boxes Target</label>
-                  <input type="number" value="${m.target || ''}" onchange="updateField(${m.id}, 'target', this.value)" class="w-full bg-transparent text-white font-mono text-sm outline-none">
+                  <input type="number" value="${m.target || ''}"
+                    onchange="updateField(${m.id}, 'target', this.value)"
+                    onfocus="this.select()" onclick="this.select()"
+                    class="w-full bg-transparent text-white font-mono text-sm outline-none">
                 </div>
+              </div>
+            </div>
+
+            <!-- Timers moved directly under Current Job -->
+            <div class="grid grid-cols-2 gap-2">
+              <div class="bg-slate-950 border border-slate-800 p-3 rounded-xl">
+                <p class="text-[9px] font-black text-slate-400 uppercase tracking-widest">Job Ends In</p>
+                <p id="jobend-${m.id}" data-eta="${metrics.jobEndEtaMs || ''}"
+                  class="text-2xl font-black ${metrics.jobEndEtaMs ? 'text-emerald-400' : 'text-slate-600'}">${jobEndsDisplay}</p>
+              </div>
+
+              <div class="bg-slate-950 border border-slate-800 p-3 rounded-xl">
+                <p class="text-[9px] font-black text-slate-400 uppercase tracking-widest">CO Ends In</p>
+                <p id="coend-${m.id}" data-eta="${metrics.coEndEtaMs || ''}"
+                  class="text-2xl font-black ${metrics.coEndEtaMs ? 'text-amber-400' : 'text-slate-600'}">${coEndsDisplay}</p>
+                <p class="text-[10px] font-mono text-slate-500 mt-1 uppercase">
+                  ${m.queue.length > 0 ? `CO: ${(m.queue[0].changeOver || 0)}m` : 'NO QUEUE'}
+                </p>
               </div>
             </div>
 
@@ -369,28 +385,42 @@
 
               <div class="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
                 ${m.queue.map(q => `
-                  <div class="bg-slate-950 border border-slate-800 p-2 rounded-lg grid grid-cols-3 gap-2 relative group">
-                    <button onclick="removeQueue(${m.id}, ${q.id})" class="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5 text-white">
+                  <div class="bg-slate-950 border border-slate-800 p-3 rounded-lg grid grid-cols-3 gap-2 relative group">
+                    <button onclick="removeQueue(${m.id}, ${q.id})"
+                      class="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5 text-white">
                       <i data-lucide="x" class="w-2 h-2"></i>
                     </button>
+
                     <div>
-                      <label class="text-[7px] text-slate-600 uppercase">CO</label>
-                      <input type="number" value="${q.changeOver}" onchange="updateQueue(${m.id}, ${q.id}, 'changeOver', this.value)" class="w-full bg-transparent text-[10px] font-mono outline-none">
+                      <label class="text-[9px] text-slate-500 uppercase font-black">CO</label>
+                      <input type="number" value="${q.changeOver}"
+                        onchange="updateQueue(${m.id}, ${q.id}, 'changeOver', this.value)"
+                        onfocus="this.select()" onclick="this.select()"
+                        class="w-full bg-transparent text-sm font-mono outline-none">
                     </div>
+
                     <div>
-                      <label class="text-[7px] text-slate-600 uppercase">SPD</label>
-                      <input type="number" value="${q.speed}" onchange="updateQueue(${m.id}, ${q.id}, 'speed', this.value)" class="w-full bg-transparent text-[10px] font-mono outline-none">
+                      <label class="text-[9px] text-slate-500 uppercase font-black">SPD</label>
+                      <input type="number" value="${q.speed}"
+                        onchange="updateQueue(${m.id}, ${q.id}, 'speed', this.value)"
+                        onfocus="this.select()" onclick="this.select()"
+                        class="w-full bg-transparent text-sm font-mono outline-none">
                     </div>
+
                     <div>
-                      <label class="text-[7px] text-slate-600 uppercase">TGT</label>
-                      <input type="number" value="${q.target}" onchange="updateQueue(${m.id}, ${q.id}, 'target', this.value)" class="w-full bg-transparent text-[10px] font-mono outline-none">
+                      <label class="text-[9px] text-slate-500 uppercase font-black">TGT</label>
+                      <input type="number" value="${q.target}"
+                        onchange="updateQueue(${m.id}, ${q.id}, 'target', this.value)"
+                        onfocus="this.select()" onclick="this.select()"
+                        class="w-full bg-transparent text-sm font-mono outline-none">
                     </div>
                   </div>
                 `).join('')}
               </div>
 
               ${m.queue.length > 0 ? `
-                <button onclick="promoteQueue(${m.id})" class="w-full py-1.5 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-lg text-[9px] font-black uppercase">
+                <button onclick="promoteQueue(${m.id})"
+                  class="w-full py-1.5 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-lg text-[9px] font-black uppercase">
                   Promote Next Job
                 </button>
               ` : ''}
@@ -400,7 +430,9 @@
               <div class="flex justify-between text-[10px] font-black uppercase text-slate-500">
                 <span>Efficiency</span><span class="text-blue-400">${m.efficiency}%</span>
               </div>
-              <input type="range" min="1" max="100" value="${m.efficiency}" oninput="updateField(${m.id}, 'efficiency', this.value)" class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none accent-blue-500">
+              <input type="range" min="1" max="100" value="${m.efficiency}"
+                oninput="updateField(${m.id}, 'efficiency', this.value)"
+                class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none accent-blue-500">
             </div>
 
             <div class="bg-black/40 p-4 rounded-xl border border-slate-800">
@@ -416,21 +448,23 @@
       lucide.createIcons();
     }
 
-    // Live update: clock + countdown timers (without re-rendering)
+    // Live update: clock + timers (without re-rendering)
     function updateLive() {
       const clockEl = document.getElementById('clock');
       if (clockEl) clockEl.textContent = new Date().toLocaleTimeString();
 
       machines.forEach(m => {
-        const cEl = document.getElementById(`nextcount-${m.id}`);
-        if (!cEl) return;
-
-        const eta = Number(cEl.dataset.eta || 0);
-        if (!eta) {
-          cEl.textContent = '—';
-          return;
+        const jobEl = document.getElementById(`jobend-${m.id}`);
+        if (jobEl) {
+          const eta = Number(jobEl.dataset.eta || 0);
+          jobEl.textContent = eta ? formatCountdown(eta - Date.now()) : '—';
         }
-        cEl.textContent = formatCountdown(eta - Date.now());
+
+        const coEl = document.getElementById(`coend-${m.id}`);
+        if (coEl) {
+          const eta = Number(coEl.dataset.eta || 0);
+          coEl.textContent = eta ? formatCountdown(eta - Date.now()) : '—';
+        }
       });
     }
 
