@@ -4,338 +4,159 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Production Intel Dashboard</title>
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
+
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono&display=swap');
+
     body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
     .font-mono { font-family: 'JetBrains Mono', monospace; }
+
     .custom-scrollbar::-webkit-scrollbar { width: 4px; }
     .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+
+    @keyframes softPulse {
+      0%,100% { transform: scale(1); opacity: .55; }
+      50% { transform: scale(1.35); opacity: 1; }
+    }
+    .pulse-dot {
+      animation: softPulse 1.2s infinite ease-in-out;
+      box-shadow: 0 0 0.6rem currentColor;
+    }
   </style>
 </head>
 
 <body class="bg-slate-950 text-slate-100 min-h-screen p-4">
-  <div id="app" class="max-w-7xl mx-auto">
-    <header class="flex flex-col md:flex-row justify-between items-start mb-8 gap-4">
-      <div>
-        <h1 class="text-3xl font-black flex items-center gap-2 tracking-tight">
-          <i data-lucide="monitor" class="text-blue-500"></i> PRODUCTION INTEL
-        </h1>
-        <div class="flex items-center gap-3 mt-1">
-          <p id="clock" class="text-slate-400 text-[10px] font-mono uppercase tracking-widest">--:--:--</p>
-          <div class="flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-bold bg-emerald-500/10 border-emerald-500/20 text-emerald-400 uppercase">
-            <i data-lucide="check-circle" class="w-[10px] h-[10px]"></i> LOCAL MODE
-          </div>
-        </div>
-      </div>
+<div class="max-w-7xl mx-auto">
 
-      <button onclick="resetData()" class="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-red-400 text-[10px] font-bold uppercase">
-        Reset All Machines
-      </button>
-    </header>
-
-    <div id="machine-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+<header class="flex flex-col md:flex-row justify-between items-start mb-8 gap-4">
+  <div>
+    <h1 class="text-3xl font-black flex items-center gap-2 tracking-tight">
+      <i data-lucide="monitor" class="text-blue-500"></i> PRODUCTION INTEL
+    </h1>
+    <p id="clock" class="text-slate-400 text-[10px] font-mono uppercase tracking-widest">--:--:--</p>
   </div>
 
-  <script>
-    const allLengths = ["15\"", "18\"", "21\"", "23\"", "24\"", "30\"", "33\""];
+  <button onclick="resetData()" class="bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg text-red-400 text-[10px] font-bold uppercase">
+    Reset All Machines
+  </button>
+</header>
 
-    const defaultMachineSchedule = {
-      run2ndShift: true,              // if false, 2nd shift minutes never count for this machine
-      thirdShiftMode: "normal",       // "normal" (20:30-06:30) | "early" (16:30-03:00)
-      allowSundayNightThird: false    // if true, Sunday counts only for 3rd shift minutes (per machine)
-    };
+<div id="machine-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
 
-    let machines = JSON.parse(localStorage.getItem('prod_intel_v4')) || [
-      { id: 1, name: "Red Machine", color: "#ef4444", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "23\"", allowedLengths: ["23\""], queue: [], status: 'idle', ...defaultMachineSchedule },
-      { id: 2, name: "Orange Machine", color: "#f97316", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "33\"", allowedLengths: ["33\"", "21\"", "18\""], queue: [], status: 'idle', ...defaultMachineSchedule },
-      { id: 3, name: "Yellow Machine", color: "#eab308", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "23\"", allowedLengths: ["15\"", "18\"", "21\"", "23\""], queue: [], status: 'idle', ...defaultMachineSchedule },
-      { id: 4, name: "Green Machine", color: "#22c55e", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "15\"", allowedLengths: allLengths, queue: [], status: 'idle', ...defaultMachineSchedule },
-      { id: 5, name: "Blue Machine", color: "#3b82f6", speed: 0, target: 0, efficiency: 90, shifts: ['1st', '3rd'], currentLength: "15\"", allowedLengths: allLengths, queue: [], status: 'idle', ...defaultMachineSchedule },
-    ];
+</div>
 
-    // migrate older saved machines missing new keys
-    machines = machines.map(m => ({ ...defaultMachineSchedule, ...m }));
+<script>
+/* -------------------- DATA -------------------- */
+const allLengths = ["15\"", "18\"", "21\"", "23\"", "24\"", "30\"", "33\""];
 
-    function saveData() { localStorage.setItem('prod_intel_v4', JSON.stringify(machines)); }
-    function resetData() { if (confirm("Clear all data?")) { localStorage.removeItem('prod_intel_v4'); location.reload(); } }
+const defaultSchedule = {
+  run2ndShift: true,
+  thirdShiftMode: "normal",
+  allowSundayNightThird: false
+};
 
-    // ---- Scheduling helpers (per machine) ----
-    function isWorkdayForMachine(date, m) {
-      const d = date.getDay(); // 0=Sun ... 6=Sat
-      if (d >= 1 && d <= 5) return true; // Mon–Fri
-      if (d === 0 && m.allowSundayNightThird) return true; // Sunday allowed only for 3rd
-      return false; // Saturday never
-    }
+let machines = JSON.parse(localStorage.getItem("prod_intel_v4")) || [
+  { id:1,name:"Red Machine",color:"#ef4444",speed:0,target:0,efficiency:90,shifts:["1st","3rd"],currentLength:"23\"",allowedLengths:["23\""],queue:[],status:"idle",...defaultSchedule },
+  { id:2,name:"Orange Machine",color:"#f97316",speed:0,target:0,efficiency:90,shifts:["1st","3rd"],currentLength:"33\"",allowedLengths:["33\"","21\"","18\""],queue:[],status:"idle",...defaultSchedule },
+  { id:3,name:"Yellow Machine",color:"#eab308",speed:0,target:0,efficiency:90,shifts:["1st","3rd"],currentLength:"23\"",allowedLengths:["15\"","18\"","21\"","23\""],queue:[],status:"idle",...defaultSchedule },
+  { id:4,name:"Green Machine",color:"#22c55e",speed:0,target:0,efficiency:90,shifts:["1st","3rd"],currentLength:"15\"",allowedLengths:allLengths,queue:[],status:"idle",...defaultSchedule },
+  { id:5,name:"Blue Machine",color:"#3b82f6",speed:0,target:0,efficiency:90,shifts:["1st","3rd"],currentLength:"15\"",allowedLengths:allLengths,queue:[],status:"idle",...defaultSchedule },
+];
 
-    function inWindow(hour, start, end) {
-      // Handles windows that cross midnight.
-      if (start <= end) return hour >= start && hour < end;
-      return hour >= start || hour < end;
-    }
+machines = machines.map(m => ({ ...defaultSchedule, ...m }));
 
-    function isTimeInActiveShift(date, m) {
-      const hour = date.getHours() + date.getMinutes() / 60;
+const saveData = () => localStorage.setItem("prod_intel_v4", JSON.stringify(machines));
+const resetData = () => confirm("Clear all data?") && localStorage.removeItem("prod_intel_v4") && location.reload();
 
-      if (!isWorkdayForMachine(date, m)) return false;
+/* -------------------- HELPERS -------------------- */
+const isProducing = m =>
+  m.status === "active" && m.speed > 0 && m.target > 0;
 
-      // 1st: 06:30–16:30
-      const in1st = m.shifts.includes('1st') && inWindow(hour, 6.5, 16.5);
+const inWindow = (h,s,e) => s<=e ? h>=s && h<e : h>=s || h<e;
 
-      // 2nd: 16:30–20:30 (only if enabled for this machine)
-      const in2nd =
-        m.run2ndShift &&
-        m.shifts.includes('2nd') &&
-        inWindow(hour, 16.5, 20.5);
+function isTimeInActiveShift(date,m){
+  const h=date.getHours()+date.getMinutes()/60;
+  const d=date.getDay();
+  if(d===6) return false;
+  if(d===0 && !m.allowSundayNightThird) return false;
 
-      // 3rd: normal 20:30–06:30 OR early 16:30–03:00 (10.5 hours)
-      let thirdStart = 20.5, thirdEnd = 6.5;
-      if (m.thirdShiftMode === "early") {
-        thirdStart = 16.5;
-        thirdEnd = 3.0;
-      }
-      const in3rd = m.shifts.includes('3rd') && inWindow(hour, thirdStart, thirdEnd);
+  const in1 = m.shifts.includes("1st") && inWindow(h,6.5,16.5);
+  const in2 = m.run2ndShift && m.shifts.includes("2nd") && inWindow(h,16.5,20.5);
+  const [s,e] = m.thirdShiftMode==="early" ? [16.5,3] : [20.5,6.5];
+  const in3 = m.shifts.includes("3rd") && inWindow(h,s,e);
 
-      // If it's Sunday and we only allow Sunday night for 3rd, do not count 1st/2nd on Sunday.
-      if (date.getDay() === 0) return in3rd;
+  return d===0 ? in3 : in1||in2||in3;
+}
 
-      return in1st || in2nd || in3rd;
-    }
+/* -------------------- METRICS -------------------- */
+function calculateMetrics(m){
+  const bph=(m.speed*60/1000)*(m.efficiency/100);
+  const cur=(bph&&m.target)?(m.target/bph)*60:0;
 
-    // ---- Metrics ----
-    function calculateMetrics(m) {
-      const bph = (m.speed * 60 / 1000) * (m.efficiency / 100);
-      const currentJobMins = (bph > 0 && m.target > 0) ? (m.target / bph) * 60 : 0;
+  let seq=[{mins:cur,bph,type:"job"}];
+  m.queue.forEach(q=>{
+    const qb=(q.speed*60/1000)*(m.efficiency/100);
+    seq.push({mins:q.changeOver||0,type:"co"});
+    seq.push({mins:(qb&&q.target)?(q.target/qb)*60:0,bph:qb,type:"job"});
+  });
 
-      let sequence = [{ mins: currentJobMins, bph: bph, type: 'job' }];
-      m.queue.forEach(q => {
-        const qBph = (q.speed * 60 / 1000) * (m.efficiency / 100);
-        sequence.push({ mins: q.changeOver || 0, type: 'co' });
-        sequence.push({ mins: (qBph > 0 && q.target > 0) ? (q.target / qBph) * 60 : 0, bph: qBph, type: 'job' });
-      });
+  let total=seq.reduce((a,s)=>a+s.mins,0);
+  let cd=new Date(),rem=total;
+  while(rem>0){ if(isTimeInActiveShift(cd,m)) rem--; cd.setMinutes(cd.getMinutes()+1); }
 
-      let totalMins = sequence.reduce((acc, s) => acc + s.mins, 0);
+  let next=null;
+  if(m.queue.length && cur){
+    let nd=new Date(),nr=cur+(m.queue[0].changeOver||0);
+    while(nr>0){ if(isTimeInActiveShift(nd,m)) nr--; nd.setMinutes(nd.getMinutes()+1); }
+    const s=Math.max(0,Math.floor((nd-Date.now())/1000));
+    next=[Math.floor(s/3600),Math.floor(s%3600/60),s%60].map(x=>String(x).padStart(2,"0")).join(":");
+  }
 
-      // Finish time (count only minutes that fall inside this machine's active shifts)
-      let checkDate = new Date();
-      let remaining = totalMins;
-      while (remaining > 0) {
-        if (isTimeInActiveShift(checkDate, m)) remaining--;
-        checkDate.setMinutes(checkDate.getMinutes() + 1);
-      }
+  return {
+    finish: total?cd.toLocaleString([],{weekday:"short",hour:"numeric",minute:"2-digit"}):"N/A",
+    duration:`${Math.floor(total/60)}h ${Math.round(total%60)}m`,
+    next
+  };
+}
 
-      // Projection cutoff: tomorrow 06:30
-      const tomorrow630 = new Date();
-      tomorrow630.setDate(tomorrow630.getDate() + 1);
-      tomorrow630.setHours(6, 30, 0, 0);
+/* -------------------- ACTIONS -------------------- */
+const update=(id,f,v)=>{ const m=machines.find(x=>x.id===id); m[f]=isNaN(m[f])?v:+v||0; saveData(); render(); };
+const toggleShift=(id,s)=>{ const m=machines.find(x=>x.id===id); m.shifts=m.shifts.includes(s)?m.shifts.filter(x=>x!==s):[...m.shifts,s]; saveData(); render(); };
+const addQueue=id=>{ machines.find(m=>m.id===id).queue.push({id:Date.now(),changeOver:0,speed:0,target:0,length:""}); saveData(); render(); };
+const updateQueue=(m,q,f,v)=>{ const x=machines.find(x=>x.id===m).queue.find(y=>y.id===q); x[f]=f==="length"?v:+v||0; saveData(); render(); };
+const removeQueue=(m,q)=>{ machines.find(x=>x.id===m).queue=machines.find(x=>x.id===m).queue.filter(y=>y.id!==q); saveData(); render(); };
 
-      let projection = 0;
-      let simDate = new Date();
-      let simSequence = JSON.parse(JSON.stringify(sequence));
+/* -------------------- RENDER -------------------- */
+function render(){
+  document.getElementById("machine-grid").innerHTML=machines.map(m=>{
+    const r=calculateMetrics(m);
+    return `
+<div class="bg-slate-900 border-2 rounded-2xl p-4" style="border-color:${isProducing(m)?m.color:"#1e293b"}">
+<div class="flex justify-between mb-2">
+  <div class="flex items-center gap-2 font-black uppercase">${m.name}
+    ${isProducing(m)?`<span class="pulse-dot w-2 h-2 rounded-full" style="background:${m.color};color:${m.color}"></span>`:`<span class="w-2 h-2 bg-slate-600 rounded-full"></span>`}
+  </div>
+  <select onchange="update(${m.id},'status',this.value)" class="bg-transparent text-xs">
+    <option ${m.status==="active"?"selected":""}>active</option>
+    <option ${m.status==="idle"?"selected":""}>idle</option>
+  </select>
+</div>
 
-      while (simDate < tomorrow630 && simSequence.length > 0) {
-        if (isTimeInActiveShift(simDate, m)) {
-          let step = simSequence[0];
-          if (step.type === 'job') projection += (step.bph / 60);
-          step.mins -= 1;
-          if (step.mins <= 0) simSequence.shift();
-        }
-        simDate.setMinutes(simDate.getMinutes() + 1);
-      }
+<div class="text-xs text-slate-400">Next Job</div>
+<div class="text-2xl font-black text-emerald-400">${r.next||"--:--:--"}</div>
 
-      return {
-        finish: totalMins > 0
-          ? checkDate.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
-          : "N/A",
-        projection: Math.floor(projection),
-        duration: `${Math.floor(totalMins / 60)}h ${Math.round(totalMins % 60)}m`
-      };
-    }
+<div class="mt-2 text-xs text-slate-500">Finish: ${r.finish}</div>
+<div class="text-xs text-slate-500">Runtime: ${r.duration}</div>
+</div>`;
+  }).join("");
+  lucide.createIcons();
+}
 
-    // ---- Field updates ----
-    window.updateField = (id, field, val) => {
-      const m = machines.find(x => x.id === id);
-      m[field] = (typeof m[field] === 'number') ? parseFloat(val) || 0 : val;
-      saveData(); render();
-    };
-
-    window.toggleShift = (id, shift) => {
-      const m = machines.find(x => x.id === id);
-      m.shifts = m.shifts.includes(shift) ? m.shifts.filter(s => s !== shift) : [...m.shifts, shift];
-      saveData(); render();
-    };
-
-    window.updateMachineSchedule = (id, field, val) => {
-      const m = machines.find(x => x.id === id);
-      if (!m) return;
-      m[field] = val;
-      saveData(); render();
-    };
-
-    // ---- Queue ----
-    window.addQueue = (mId) => {
-      const m = machines.find(x => x.id === mId);
-      m.queue.push({ id: Date.now(), changeOver: 0, speed: 0, target: 0, length: m.currentLength });
-      saveData(); render();
-    };
-
-    window.updateQueue = (mId, qId, field, val) => {
-      const m = machines.find(x => x.id === mId);
-      const q = m.queue.find(x => x.id === qId);
-      q[field] = field === 'length' ? val : parseFloat(val) || 0;
-      saveData(); render();
-    };
-
-    window.removeQueue = (mId, qId) => {
-      const m = machines.find(x => x.id === mId);
-      m.queue = m.queue.filter(x => x.id !== qId);
-      saveData(); render();
-    };
-
-    window.promoteQueue = (mId) => {
-      const m = machines.find(x => x.id === mId);
-      if (m.queue.length > 0) {
-        const next = m.queue.shift();
-        m.speed = next.speed;
-        m.target = next.target;
-        m.currentLength = next.length;
-        saveData(); render();
-      }
-    };
-
-    // ---- Render ----
-    function render() {
-      const grid = document.getElementById('machine-grid');
-      grid.innerHTML = machines.map(m => {
-        const metrics = calculateMetrics(m);
-
-        return `
-          <div class="bg-slate-900 border-2 rounded-2xl shadow-2xl overflow-hidden" style="border-color: ${m.status === 'active' ? m.color : '#1e293b'}">
-            <div class="p-4 bg-white/5 border-b border-slate-800 flex justify-between">
-              <div>
-                <span class="font-black uppercase text-lg">${m.name}</span>
-                <select onchange="updateField(${m.id}, 'status', this.value)" class="block bg-transparent text-[10px] font-black uppercase text-slate-500 outline-none">
-                  <option value="active" ${m.status === 'active' ? 'selected' : ''}>Active</option>
-                  <option value="idle" ${m.status === 'idle' ? 'selected' : ''}>Idle</option>
-                </select>
-              </div>
-              <select onchange="updateField(${m.id}, 'currentLength', this.value)" class="bg-transparent text-sm font-black text-blue-400 outline-none">
-                ${m.allowedLengths.map(l => `<option value='${l}' ${m.currentLength === l ? 'selected' : ''}>${l}</option>`).join('')}
-              </select>
-            </div>
-
-            <div class="p-5 space-y-4">
-              <div class="bg-blue-500/10 border border-blue-500/20 p-4 rounded-xl">
-                <p class="text-[9px] font-black text-blue-400 uppercase tracking-widest">Projection (By 06:30)</p>
-                <p class="text-3xl font-black">${metrics.projection.toLocaleString()} <span class="text-xs text-slate-500 uppercase">Boxes</span></p>
-              </div>
-
-              <div class="flex gap-1">
-                ${['1st', '2nd', '3rd'].map(s => `
-                  <button onclick="toggleShift(${m.id}, '${s}')"
-                    class="flex-1 py-1.5 rounded text-[10px] font-black ${m.shifts.includes(s) ? 'bg-slate-700 text-white' : 'bg-slate-950 text-slate-600'}">
-                    ${s}
-                  </button>
-                `).join('')}
-              </div>
-
-              <!-- Per-machine schedule overrides -->
-              <div class="grid grid-cols-3 gap-2">
-                <button
-                  onclick="updateMachineSchedule(${m.id}, 'run2ndShift', ${!m.run2ndShift})"
-                  class="py-1.5 rounded text-[10px] font-black uppercase ${m.run2ndShift ? 'bg-slate-700 text-white' : 'bg-slate-950 text-slate-600'}">
-                  2nd ${m.run2ndShift ? 'ON' : 'OFF'}
-                </button>
-
-                <select
-                  onchange="updateMachineSchedule(${m.id}, 'thirdShiftMode', this.value)"
-                  class="bg-slate-950 border border-slate-800 rounded text-[10px] font-black uppercase text-slate-200 px-2 py-1.5">
-                  <option value="normal" ${m.thirdShiftMode === 'normal' ? 'selected' : ''}>3rd NORMAL</option>
-                  <option value="early" ${m.thirdShiftMode === 'early' ? 'selected' : ''}>3rd EARLY</option>
-                </select>
-
-                <button
-                  onclick="updateMachineSchedule(${m.id}, 'allowSundayNightThird', ${!m.allowSundayNightThird})"
-                  class="py-1.5 rounded text-[10px] font-black uppercase ${m.allowSundayNightThird ? 'bg-slate-700 text-white' : 'bg-slate-950 text-slate-600'}">
-                  SUN ${m.allowSundayNightThird ? 'ON' : 'OFF'}
-                </button>
-              </div>
-
-              <div class="space-y-2">
-                <p class="text-[10px] font-black text-emerald-500 uppercase">Current Job</p>
-                <div class="grid grid-cols-2 gap-3">
-                  <div class="bg-slate-950 p-2 rounded border border-slate-800">
-                    <label class="text-[8px] font-black text-slate-500 uppercase">Speed FPM</label>
-                    <input type="number" value="${m.speed || ''}" onchange="updateField(${m.id}, 'speed', this.value)" class="w-full bg-transparent text-white font-mono text-sm outline-none">
-                  </div>
-                  <div class="bg-slate-950 p-2 rounded border border-slate-800">
-                    <label class="text-[8px] font-black text-slate-500 uppercase">Boxes Target</label>
-                    <input type="number" value="${m.target || ''}" onchange="updateField(${m.id}, 'target', this.value)" class="w-full bg-transparent text-white font-mono text-sm outline-none">
-                  </div>
-                </div>
-              </div>
-
-              <div class="space-y-3">
-                <div class="flex justify-between items-center">
-                  <span class="text-[10px] font-black text-amber-500 uppercase">Queue</span>
-                  <button onclick="addQueue(${m.id})" class="text-[10px] font-black text-blue-400 uppercase">+ Add Next Job</button>
-                </div>
-
-                <div class="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
-                  ${m.queue.map(q => `
-                    <div class="bg-slate-950 border border-slate-800 p-2 rounded-lg grid grid-cols-3 gap-2 relative group">
-                      <button onclick="removeQueue(${m.id}, ${q.id})" class="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5 text-white">
-                        <i data-lucide="x" class="w-2 h-2"></i>
-                      </button>
-                      <div>
-                        <label class="text-[7px] text-slate-600 uppercase">CO</label>
-                        <input type="number" value="${q.changeOver}" onchange="updateQueue(${m.id}, ${q.id}, 'changeOver', this.value)" class="w-full bg-transparent text-[10px] font-mono">
-                      </div>
-                      <div>
-                        <label class="text-[7px] text-slate-600 uppercase">SPD</label>
-                        <input type="number" value="${q.speed}" onchange="updateQueue(${m.id}, ${q.id}, 'speed', this.value)" class="w-full bg-transparent text-[10px] font-mono">
-                      </div>
-                      <div>
-                        <label class="text-[7px] text-slate-600 uppercase">TGT</label>
-                        <input type="number" value="${q.target}" onchange="updateQueue(${m.id}, ${q.id}, 'target', this.value)" class="w-full bg-transparent text-[10px] font-mono">
-                      </div>
-                    </div>
-                  `).join('')}
-                </div>
-
-                ${m.queue.length > 0 ? `
-                  <button onclick="promoteQueue(${m.id})" class="w-full py-1.5 bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 rounded-lg text-[9px] font-black uppercase">
-                    Promote Next Job
-                  </button>
-                ` : ''}
-              </div>
-
-              <div class="space-y-1">
-                <div class="flex justify-between text-[10px] font-black uppercase text-slate-500">
-                  <span>Efficiency</span><span class="text-blue-400">${m.efficiency}%</span>
-                </div>
-                <input type="range" min="1" max="100" value="${m.efficiency}" oninput="updateField(${m.id}, 'efficiency', this.value)" class="w-full h-1.5 bg-slate-800 rounded-lg appearance-none accent-blue-500">
-              </div>
-
-              <div class="bg-black/40 p-4 rounded-xl border border-slate-800">
-                <p class="text-[9px] font-black text-slate-500 uppercase mb-1">Estimated Finish</p>
-                <p class="text-xl font-black text-white">${metrics.finish}</p>
-                <p class="text-[10px] font-mono text-slate-500 mt-1 uppercase">Runtime: ${metrics.duration}</p>
-              </div>
-            </div>
-          </div>
-        `;
-      }).join('');
-
-      lucide.createIcons();
-    }
-
-    setInterval(() => {
-      document.getElementById('clock').textContent = new Date().toLocaleTimeString();
-    }, 1000);
-
-    render();
-  </script>
+setInterval(()=>document.getElementById("clock").textContent=new Date().toLocaleTimeString(),1000);
+render();
+</script>
 </body>
 </html>
